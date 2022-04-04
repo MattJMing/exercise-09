@@ -1,0 +1,240 @@
+---
+title: "exercise-09"
+author: "Matt Ming"
+date: "3/24/2022"
+output: html_document
+---
+
+## Exercise
+
+Load in another dataset
+
+```{r}
+library(tidyverse)
+library(broom)
+library(manipulate)
+library(patchwork)
+library(infer)
+```
+
+```{r}
+f <- "https://raw.githubusercontent.com/difiore/ada-2022-datasets/main/Street_et_al_2017.csv"
+d <- read_csv(f, col_names = TRUE)
+head(d)
+```
+
+We can quickly get a sense of the data by finding the min, mean, median, max,
+Q1 and Q3.
+
+```{r}
+for(i in 3:length(names(d))){
+  sdi <- sd(d[[i]],na.rm = TRUE)
+  cat(names(d)[i],"\n")
+  cat(summary(d[,i])[c(1,2,3,5,6),1],sep = "\n")
+  cat(summary(d[,i])[4,1])
+  cat("\nSD     :",sdi,sep = "")
+  cat("\n\n")
+}
+```
+To get plots for ECV vs each of "Group_size", "Longevity", "Weaning", and 
+"Repro_lifespan", I first convert the table from "wide" to "long", meaning that
+each column name will now be stored as a variable.  I can then use facet wrap to
+plot these variables side by side
+
+```{r}
+dlong <- d %>% select(ECV,Group_size,Longevity,Weaning,Repro_lifespan) %>% 
+  gather(variable,measurement,
+         Group_size,Longevity,Weaning,Repro_lifespan,
+         factor_key = TRUE)
+p <- ggplot(dlong,aes(measurement,ECV)) + geom_point() + 
+  facet_wrap(~variable,scales = "free")
+print(p)
+```
+
+We'll now zoom in on just ECV vs. Groupsize and compute regression on just these
+two variables
+
+```{r}
+d2 <- d %>% select(ECV,Group_size) %>% drop_na()
+head(d2)
+```
+
+We can plot brain size (ECV) vs Social Group Size
+
+```{r}
+ggplot(data = d2,aes(Group_size,ECV)) + geom_point()
+```
+
+We now want to derive by hand the ordinary least squares regression coefficients
+$\beta_1$ and $\beta_0$ for ECV ~ Social Group Size
+
+```{r}
+b1 <- cor(d2$Group_size,d2$ECV)*sd(d2$ECV)/sd(d2$Group_size)
+cat("beta_1 =",b1)
+b0 <- mean(d2$ECV) - b1*mean(d2$Group_size)
+cat("\nbeta_0 =",b0)
+```
+
+We can confirm these results using the lm() function and looking at the
+coefficients
+
+```{r}
+r <- lm(ECV ~ Group_size,data = d2)
+summary(r)
+```
+
+This reconfirms that the coefficients $\beta_1 = 2.463$ and $\beta_0 = 30.357$
+
+We now perform this above analysis for each of the three main taxonomic groups:
+catarrhines, platyrrhines, and strepsirhines.
+
+```{r}
+for(group in unique(d$Taxonomic_group)){
+  d3 <- d %>% filter(Taxonomic_group == group) %>% select(ECV,Group_size) %>%
+    drop_na()
+  print(ggplot(data = d3,aes(Group_size,ECV)) + geom_point() + ggtitle(group))
+  b1group <- cor(d3$Group_size,d3$ECV)*sd(d3$ECV)/sd(d3$Group_size)
+  cat("\n\nPrimate Group:",group)
+  cat("\nbeta_1 =",b1group)
+  b0group <- mean(d3$ECV) - b1group*mean(d3$Group_size)
+  cat("\nbeta_0 =",b0group)
+  rgroup <- lm(ECV ~ Group_size,data = d3)
+  summary(rgroup)
+}
+```
+
+A visual comparison of the values of the slope coefficients shows that the 
+platyrrhine and strepsirhine groups have higher slope coefficients than the
+catarrhine group, but and that those two groups have closer slope coeffeicients
+than either is to catarrhines.  In order to really test for significance between
+these groups, we could use a t-test between these groups.
+
+We now want to calculate by hand a Standard Error for our estimates of $\beta_1$
+
+This follows
+$S_{\hat{\beta}_1}$ = 
+$\sqrt{\frac{\Sigma_i {\hat{\epsilon}_i}^2}{(n-2) \Sigma_i (x_i - \bar{x})^2}}$
+
+```{r}
+# Get a vector of residuals for ECV as a function of Group_Size
+ei <- d2$ECV - (d2$Group_size * b1 + b0)
+
+# Get the calculation for SE of B_1
+n <- length(d2$Group_size)
+x <- d2$Group_size
+sb1 <- sqrt((sum((ei)^2))/((n-2) * sum((x - mean(x))^2)))
+
+cat("SE of beta_1 (slope) =",sb1)
+```
+
+Doing this SE calculation by hand we find $S_{\hat{\beta}_1} = 0.3508061$, which
+is also reconfirmed by the summary of the lm() function.
+
+Now, for a 95% Confidence Interval, we can use the SE we just found using the
+formula $95\% CI = 1.96 \pm SE$.
+
+```{r}
+CI <- b1 + c(-1,1)*qt(1-0.025,df = n-2)*sb1
+cat("Lower CI\tUpper CI\n")
+cat(CI,sep = "\t")
+```
+
+Now, in order to get the p-value associated with the $\beta_1$ value we got, I
+can find a t-value for $\beta_1$ by dividing $\hat{\beta}_1/S_{\hat{\beta}_1}$.
+Doing this gives us
+
+```{r}
+t <- b1/sb1
+cat("The t-statistic for beta_1 =",t)
+p <- pt(abs(t),df = n-2,lower.tail = FALSE)*2
+cat(" which has a p-value of",p)
+if(p <= 0.001){cat("***")
+}else if(p <= 0.01){cat("**")
+}else if(p <= 0.05){cat("*")}
+```
+
+Next, we want to use a permutation approach to generate a null sampling
+distribution of the slope coefficient.  In this case, the null hypothesis is
+that there is no relationship between ECV and Group Size, or in other words that
+the slope of a regression line between these variables is zero.  By permuting
+one of the columns for these variables, we're breaking the association between
+them and creating a distribution which should be centered around the null of 0.
+
+We can permute either of the variables (ECV or Group Size) and I have
+arbitrarily chosen to permute Group Size.
+
+```{r}
+set.seed(123)
+permDist <- rep(NA,1000)
+for(i in 1:1000){
+  d3 <- d2
+  d3$Group_size <- sample(d3$Group_size)
+  B1_i <- lm(ECV ~ Group_size,data = d3)$coefficients[2]
+  permDist[i] <- B1_i
+}
+hist(permDist,breaks = 30,
+     xlim = c(min(min(permDist),b1)-0.5,max(max(permDist),b1)+0.5))
+abline(v = b1,col = "red",lty = "dashed")
+abline(v = mean(permDist),col = "blue",lty = "dashed")
+
+p_perm <- (sum(permDist >= abs(b1)) + sum(permDist <= -abs(b1)))/
+  length(permDist)
+cat("The empirical permutation p-value is",p_perm)
+if(p_perm <= 0.001){cat("***")
+}else if(p_perm <= 0.01){cat("**")
+}else if(p_perm <= 0.05){cat("*")}
+
+p_perm2 <- pnorm(b1,mean = mean(permDist),sd = sd(permDist),lower.tail = FALSE)
+cat("\n\nThe theoretical p-value based on a normal curve centered around the",
+    "permuted null distribution is",p_perm2)
+if(p_perm2 <= 0.001){cat("***")
+}else if(p_perm2 <= 0.01){cat("**")
+}else if(p_perm2 <= 0.05){cat("*")}
+
+```
+
+Finally, we want set up a bootstrap distribution by randomly re-sampling (with
+replacement) from the original data set of paired observations of ECV and Group
+Size.  In this way we can get an estimated sampling distribution around our
+estimate of the slope of the regression line.  From this we get a 95% confidence
+interval around our estimate by using the 0.025 and 0.975 quantiles.
+
+```{r}
+set.seed(123)
+bootDist <- rep(NA,1000)
+for(i in 1:1000){
+  bootsamps <- sample(1:length(d2$ECV),replace = TRUE)
+  d4 <- data.frame(ECV = d2$ECV[bootsamps],
+                   Group_size = d2$Group_size[bootsamps])
+  B1_i <- lm(ECV ~ Group_size,data = d4)$coefficients[2]
+  bootDist[i] <- B1_i
+}
+hist(bootDist,breaks = 30,
+     xlim = c(min(min(bootDist),b1)-0.5,max(max(bootDist),b1)+0.5))
+abline(v = b1,col = "red",lty = "dashed")
+abline(v = mean(bootDist),col = "blue",lty = "dashed")
+
+cat("A 95% confidence interval around the estimate of slope using the bootstrap",
+    "distribution is",
+    quantile(bootDist,0.025),"to",quantile(bootDist,0.975))
+
+cat("\n\nA 95% confidence interval around the estimate of slope uing a normal",
+    "distribution based on our bootstrap distribution is",
+    qnorm(0.025,mean = mean(bootDist),sd = sd(bootDist)),"to",
+    qnorm(0.975,mean = mean(bootDist),sd = sd(bootDist)))
+
+p_boot <- (sum(-bootDist >= 0) + sum(bootDist <= 0))/
+  length(bootDist)
+cat("\n\nThe empirical bootstrap p-value is",p_boot)
+if(p_boot <= 0.001){cat("***")
+}else if(p_boot <= 0.01){cat("**")
+}else if(p_boot <= 0.05){cat("*")}
+
+p_boot2 <- pnorm(0,mean = mean(bootDist),sd = sd(bootDist))
+cat("\n\nThe theoretical p-value based on a normal curve centered around the",
+    "bootstrap distribution is",p_boot2)
+if(p_boot2 <= 0.001){cat("***")
+}else if(p_boot2 <= 0.01){cat("**")
+}else if(p_boot2 <= 0.05){cat("*")}
+
+```
